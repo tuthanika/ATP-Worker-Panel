@@ -32,79 +32,79 @@ export async function VLOverWSHandler(request) {
 
     // ws --> remote
     readableWebSocketStream
-    .pipeTo(
-        new WritableStream({
-            async write(chunk, controller) {
-                if (isDns && udpStreamWrite) {
-                    return udpStreamWrite(chunk);
-                }
-                if (remoteSocketWapper.value) {
-                    const writer = remoteSocketWapper.value.writable.getWriter();
-                    await writer.write(chunk);
-                    writer.releaseLock();
-                    return;
-                }
+        .pipeTo(
+            new WritableStream({
+                async write(chunk, controller) {
+                    if (isDns && udpStreamWrite) {
+                        return udpStreamWrite(chunk);
+                    }
+                    if (remoteSocketWapper.value) {
+                        const writer = remoteSocketWapper.value.writable.getWriter();
+                        await writer.write(chunk);
+                        writer.releaseLock();
+                        return;
+                    }
 
-                const {
-                    hasError,
-                    message,
-                    portRemote = 443,
-                    addressRemote = "",
-                    rawDataIndex,
-                    VLVersion = new Uint8Array([0, 0]),
-                    isUDP,
-                } = await processVLHeader(chunk, globalThis.userID);
-                address = addressRemote;
-                portWithRandomLog = `${portRemote}--${Math.random()} ${isUDP ? "udp " : "tcp "} `;
-                if (hasError) {
-                    // controller.error(message);
-                    throw new Error(message); // cf seems has bug, controller.error will not end stream
-                    // webSocket.close(1000, message);
-                    // return;
-                }
-                // if UDP but port not DNS port, close it
-                if (isUDP) {
-                    if (portRemote === 53) {
-                        isDns = true;
-                    } else {
-                        // controller.error('UDP proxy only enable for DNS which is port 53');
-                        throw new Error("UDP proxy only enable for DNS which is port 53"); // cf seems has bug, controller.error will not end stream
+                    const {
+                        hasError,
+                        message,
+                        portRemote = 443,
+                        addressRemote = "",
+                        rawDataIndex,
+                        VLVersion = new Uint8Array([0, 0]),
+                        isUDP,
+                    } = processVLHeader(chunk, globalThis.userID);
+                    address = addressRemote;
+                    portWithRandomLog = `${portRemote}--${Math.random()} ${isUDP ? "udp " : "tcp "} `;
+                    if (hasError) {
+                        // controller.error(message);
+                        throw new Error(message); // cf seems has bug, controller.error will not end stream
+                        // webSocket.close(1000, message);
                         // return;
                     }
-                }
-                // ["version", "附加信息长度 N"]
-                const VLResponseHeader = new Uint8Array([VLVersion[0], 0]);
-                const rawClientData = chunk.slice(rawDataIndex);
+                    // if UDP but port not DNS port, close it
+                    if (isUDP) {
+                        if (portRemote === 53) {
+                            isDns = true;
+                        } else {
+                            // controller.error('UDP proxy only enable for DNS which is port 53');
+                            throw new Error("UDP proxy only enable for DNS which is port 53"); // cf seems has bug, controller.error will not end stream
+                            // return;
+                        }
+                    }
+                    // ["version", "附加信息长度 N"]
+                    const VLResponseHeader = new Uint8Array([VLVersion[0], 0]);
+                    const rawClientData = chunk.slice(rawDataIndex);
 
-                // TODO: support udp here when cf runtime has udp support
-                if (isDns) {
-                    const { write } = await handleUDPOutBound(webSocket, VLResponseHeader, log);
-                    udpStreamWrite = write;
-                    udpStreamWrite(rawClientData);
-                    return;
-                }
+                    // TODO: support udp here when cf runtime has udp support
+                    if (isDns) {
+                        const { write } = await handleUDPOutBound(webSocket, VLResponseHeader, log);
+                        udpStreamWrite = write;
+                        udpStreamWrite(rawClientData);
+                        return;
+                    }
 
-                handleTCPOutBound(
-                    remoteSocketWapper,
-                    addressRemote,
-                    portRemote,
-                    rawClientData,
-                    webSocket,
-                    VLResponseHeader,
-                    log
-                );
-            },
-            close() {
-                log(`readableWebSocketStream is close`);
-            },
-            abort(reason) {
-                log(`readableWebSocketStream is abort`, JSON.stringify(reason));
-            },
-        })
-    )
-    .catch((err) => {
-        log("readableWebSocketStream pipeTo error", err);
-    });
+                    handleTCPOutBound(
+                        remoteSocketWapper,
+                        addressRemote,
+                        portRemote,
+                        rawClientData,
+                        webSocket,
+                        VLResponseHeader,
+                        log
+                    );
+                },
+                close() {
+                    log(`readableWebSocketStream is close`);
+                },
+                abort(reason) {
+                    log(`readableWebSocketStream is abort`, JSON.stringify(reason));
+                },
+            })
+        )
+        .catch((err) => {
+            log("readableWebSocketStream pipeTo error", err);
+        });
 
     return new Response(null, {
         status: 101,
@@ -148,13 +148,15 @@ async function handleTCPOutBound(
         writer.releaseLock();
         return tcpSocket;
     }
-  
+
     // if the cf connect tcp socket have no incoming data, we retry to redirect ip
     async function retry() {
-        const panelProxyIP = globalThis.pathName.split('/')[2];
-        const panelProxyIPs = panelProxyIP ? atob(panelProxyIP).split(',') : undefined;
-        const finalProxyIP = panelProxyIPs ? panelProxyIPs[Math.floor(Math.random() * panelProxyIPs.length)] : globalThis.proxyIP || addressRemote;
-		const tcpSocket = await connectAndWrite(finalProxyIP, portRemote);
+        const EncodedPanelProxyIPs = globalThis.pathName.split('/')[2] || '';
+        const proxyIPs = atob(EncodedPanelProxyIPs) || globalThis.proxyIPs;
+        const finalProxyIPs = proxyIPs.split(',').map(ip => ip.trim());
+        const proxyIP = finalProxyIPs[Math.floor(Math.random() * finalProxyIPs.length)];
+
+        const tcpSocket = await connectAndWrite(proxyIP || addressRemote, 443);
         // no matter retry success or not, close websocket
         tcpSocket.closed
             .catch((error) => {
@@ -163,12 +165,12 @@ async function handleTCPOutBound(
             .finally(() => {
                 safeCloseWebSocket(webSocket);
             });
-            
+
         VLRemoteSocketToWS(tcpSocket, webSocket, VLResponseHeader, null, log);
     }
-  
+
     const tcpSocket = await connectAndWrite(addressRemote, portRemote);
-  
+
     // when remoteSocket is ready, pass to websocket
     // remote--> ws
     VLRemoteSocketToWS(tcpSocket, webSocket, VLResponseHeader, retry, log);
@@ -192,7 +194,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
                 const message = event.data;
                 controller.enqueue(message);
             });
-    
+
             // The event means that the client closed the client -> server stream.
             // However, the server -> client stream is still open until you call close() on the server side.
             // The WebSocket protocol says that a separate close message must be sent in each direction to fully close the socket.
@@ -233,7 +235,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
             safeCloseWebSocket(webSocketServer);
         },
     });
-  
+
     return stream;
 }
 
@@ -252,7 +254,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
  *  isUDP?: boolean
  * }} An object with the relevant information extracted from the VL header buffer.
  */
-async function processVLHeader(VLBuffer, userID) {
+function processVLHeader(VLBuffer, userID) {
     if (VLBuffer.byteLength < 24) {
         return {
             hasError: true,
@@ -264,8 +266,7 @@ async function processVLHeader(VLBuffer, userID) {
     let isUDP = false;
     const slicedBuffer = new Uint8Array(VLBuffer.slice(1, 17));
     const slicedBufferString = stringify(slicedBuffer);
-    const uuids = userID.includes(",") ? userID.split(",") : [userID];
-    isValidUser = uuids.some((userUuid) => slicedBufferString === userUuid.trim());
+    isValidUser = slicedBufferString === userID;
 
     if (!isValidUser) {
         return {
@@ -322,15 +323,15 @@ async function processVLHeader(VLBuffer, userID) {
             // 2001:0db8:85a3:0000:0000:8a2e:0370:7334
             const ipv6 = [];
             for (let i = 0; i < 8; i++) {
-            ipv6.push(dataView.getUint16(i * 2).toString(16));
+                ipv6.push(dataView.getUint16(i * 2).toString(16));
             }
             addressValue = ipv6.join(":");
             // seems no need add [] for ipv6
             break;
         default:
             return {
-            hasError: true,
-            message: `invild  addressType is ${addressType}`,
+                hasError: true,
+                message: `invild  addressType is ${addressType}`,
             };
     }
     if (!addressValue) {
@@ -370,7 +371,7 @@ async function VLRemoteSocketToWS(remoteSocket, webSocket, VLResponseHeader, ret
     await remoteSocket.readable
         .pipeTo(
             new WritableStream({
-                start() {},
+                start() { },
                 /**
                  *
                  * @param {Uint8Array} chunk
@@ -407,7 +408,7 @@ async function VLRemoteSocketToWS(remoteSocket, webSocket, VLResponseHeader, ret
             console.error(`VLRemoteSocketToWS has exception `, error.stack || error);
             safeCloseWebSocket(webSocket);
         });
-  
+
     // seems is cf connect socket have error,
     // 1. Socket.closed will have error
     // 2. Socket.readable will be close without any data coming
@@ -423,18 +424,18 @@ async function VLRemoteSocketToWS(remoteSocket, webSocket, VLResponseHeader, ret
  * @returns {{earlyData: ArrayBuffer|null, error: Error|null}} An object containing the decoded ArrayBuffer or null if there was an error, and any error that occurred during decoding or null if there was no error.
  */
 function base64ToArrayBuffer(base64Str) {
-	if (!base64Str) {
-		return { earlyData: null, error: null };
-	}
-	try {
-		// go use modified Base64 for URL rfc4648 which js atob not support
-		base64Str = base64Str.replace(/-/g, '+').replace(/_/g, '/');
-		const decode = atob(base64Str);
-		const arryBuffer = Uint8Array.from(decode, (c) => c.charCodeAt(0));
-		return { earlyData: arryBuffer.buffer, error: null };
-	} catch (error) {
-		return { earlyData: null, error };
-	}
+    if (!base64Str) {
+        return { earlyData: null, error: null };
+    }
+    try {
+        // go use modified Base64 for URL rfc4648 which js atob not support
+        base64Str = base64Str.replace(/-/g, '+').replace(/_/g, '/');
+        const decode = atob(base64Str);
+        const arryBuffer = Uint8Array.from(decode, (c) => c.charCodeAt(0));
+        return { earlyData: arryBuffer.buffer, error: null };
+    } catch (error) {
+        return { earlyData: null, error };
+    }
 }
 
 const WS_READY_STATE_OPEN = 1;
@@ -444,19 +445,19 @@ const WS_READY_STATE_CLOSING = 2;
  * @param {import("@cloudflare/workers-types").WebSocket} socket The WebSocket connection to close.
  */
 function safeCloseWebSocket(socket) {
-	try {
-		if (socket.readyState === WS_READY_STATE_OPEN || socket.readyState === WS_READY_STATE_CLOSING) {
-			socket.close();
-		}
-	} catch (error) {
-		console.error('safeCloseWebSocket error', error);
-	}
+    try {
+        if (socket.readyState === WS_READY_STATE_OPEN || socket.readyState === WS_READY_STATE_CLOSING) {
+            socket.close();
+        }
+    } catch (error) {
+        console.error('safeCloseWebSocket error', error);
+    }
 }
 
 const byteToHex = [];
 
 for (let i = 0; i < 256; ++i) {
-	byteToHex.push((i + 256).toString(16).slice(1));
+    byteToHex.push((i + 256).toString(16).slice(1));
 }
 
 function unsafeStringify(arr, offset = 0) {
@@ -485,11 +486,11 @@ function unsafeStringify(arr, offset = 0) {
 }
 
 function stringify(arr, offset = 0) {
-	const uuid = unsafeStringify(arr, offset);
-	if (!isValidUUID(uuid)) {
-		throw TypeError("Stringified UUID is invalid");
-	}
-	return uuid;
+    const uuid = unsafeStringify(arr, offset);
+    if (!isValidUUID(uuid)) {
+        throw TypeError("Stringified UUID is invalid");
+    }
+    return uuid;
 }
 
 /**
@@ -502,11 +503,11 @@ function stringify(arr, offset = 0) {
 async function handleUDPOutBound(webSocket, VLResponseHeader, log) {
     let isVLHeaderSent = false;
     const transformStream = new TransformStream({
-        start(controller) {},
+        start(controller) { },
         transform(chunk, controller) {
             // udp message 2 byte is the the length of udp data
             // TODO: this should have bug, beacsue maybe udp chunk can be in two websocket message
-            for (let index = 0; index < chunk.byteLength; ) {
+            for (let index = 0; index < chunk.byteLength;) {
                 const lengthBuffer = chunk.slice(index, index + 2);
                 const udpPakcetLength = new DataView(lengthBuffer).getUint16(0);
                 const udpData = new Uint8Array(chunk.slice(index + 2, index + 2 + udpPakcetLength));
@@ -514,46 +515,46 @@ async function handleUDPOutBound(webSocket, VLResponseHeader, log) {
                 controller.enqueue(udpData);
             }
         },
-        flush(controller) {},
+        flush(controller) { },
     });
-    
+
     // only handle dns udp for now
     transformStream.readable
-    .pipeTo(
-        new WritableStream({
-            async write(chunk) {
-                const resp = await fetch(
-                    globalThis.dohURL, // dns server url
-                    {
-                        method: "POST",
-                        headers: {
-                            "content-type": "application/dns-message",
-                        },
-                        body: chunk,
+        .pipeTo(
+            new WritableStream({
+                async write(chunk) {
+                    const resp = await fetch(
+                        globalThis.dohURL, // dns server url
+                        {
+                            method: "POST",
+                            headers: {
+                                "content-type": "application/dns-message",
+                            },
+                            body: chunk,
+                        }
+                    );
+                    const dnsQueryResult = await resp.arrayBuffer();
+                    const udpSize = dnsQueryResult.byteLength;
+                    // console.log([...new Uint8Array(dnsQueryResult)].map((x) => x.toString(16)));
+                    const udpSizeBuffer = new Uint8Array([(udpSize >> 8) & 0xff, udpSize & 0xff]);
+                    if (webSocket.readyState === WS_READY_STATE_OPEN) {
+                        log(`doh success and dns message length is ${udpSize}`);
+                        if (isVLHeaderSent) {
+                            webSocket.send(await new Blob([udpSizeBuffer, dnsQueryResult]).arrayBuffer());
+                        } else {
+                            webSocket.send(await new Blob([VLResponseHeader, udpSizeBuffer, dnsQueryResult]).arrayBuffer());
+                            isVLHeaderSent = true;
+                        }
                     }
-                );
-                const dnsQueryResult = await resp.arrayBuffer();
-                const udpSize = dnsQueryResult.byteLength;
-                // console.log([...new Uint8Array(dnsQueryResult)].map((x) => x.toString(16)));
-                const udpSizeBuffer = new Uint8Array([(udpSize >> 8) & 0xff, udpSize & 0xff]);
-                if (webSocket.readyState === WS_READY_STATE_OPEN) {
-                    log(`doh success and dns message length is ${udpSize}`);
-                    if (isVLHeaderSent) {
-                        webSocket.send(await new Blob([udpSizeBuffer, dnsQueryResult]).arrayBuffer());
-                    } else {
-                        webSocket.send(await new Blob([VLResponseHeader, udpSizeBuffer, dnsQueryResult]).arrayBuffer());
-                        isVLHeaderSent = true;
-                    }
-                }
-            },
-        })
-    )
-    .catch((error) => {
-        log("dns udp has error" + error);
-    });
-  
+                },
+            })
+        )
+        .catch((error) => {
+            log("dns udp has error" + error);
+        });
+
     const writer = transformStream.writable.getWriter();
-  
+
     return {
         /**
          *

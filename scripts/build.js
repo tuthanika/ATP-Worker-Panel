@@ -56,7 +56,8 @@ async function buildWorker() {
         format: 'esm',
         write: false,
         external: ['cloudflare:sockets'],
-        platform: 'node',
+        platform: 'browser',
+        target: 'es2020',
         define: {
             __PANEL_HTML_CONTENT__: htmls['panel'] ?? '""',
             __LOGIN_HTML_CONTENT__: htmls['login'] ?? '""',
@@ -87,12 +88,12 @@ async function buildWorker() {
         renameGlobals: true,
         deadCodeInjection: true,
         deadCodeInjectionThreshold: 0.2,
-        simplify: true,
-        compact: true,
-        target: "node"
+        target: "browser"
     });
 
-    const worker = obfuscationResult.getObfuscatedCode();
+    const finalCode = obfuscationResult.getObfuscatedCode();
+    const worker = `// @ts-nocheck\n${finalCode}`;
+    
     console.log('✅ Worker obfuscated successfuly!');
 
     mkdirSync(DIST_PATH, { recursive: true });
